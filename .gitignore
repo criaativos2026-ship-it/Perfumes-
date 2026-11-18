@@ -1,5 +1,3 @@
-data/
-__pycache__/
-*.pyc
-.pytest_cache/
-.env
+_site/
+node_modules/
+.DS_Store

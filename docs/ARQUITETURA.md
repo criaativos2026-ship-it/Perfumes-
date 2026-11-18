@@ -1,3 +1,28 @@
+# Arquitetura
+
+> **Versão atual: app para celular, 100% gratuito** (ver README). As seções abaixo da linha descrevem a proposta
+> original com APIs pagas (Claude, Veo, Kling, ElevenLabs). Ela foi substituída a pedido do usuário e fica
+> registrada como referência para uma eventual versão premium.
+
+## Versão atual (celular, gratuita)
+
+```
+Celular (navegador / app instalado)
+ ├─ Foto ──► recorte local do frasco (cutout.js)
+ ├─ Gemini (plano gratuito, chave do usuário)
+ │    ├─ identificação (visão)
+ │    ├─ pesquisa com busca do Google ──► checagem das fontes no código (ai.js)
+ │    └─ direção de arte em JSON, presa ao guia da marca
+ ├─ Motor de animação em Canvas (engine.js, glyphs.js)
+ ├─ Efeitos sonoros sintetizados (audio.js)
+ ├─ MP4 via WebCodecs + mp4-muxer (export.js)
+ └─ Dados no aparelho (IndexedDB/localStorage, store.js)
+```
+
+Nada passa por servidor próprio. Só as chamadas ao Gemini saem do aparelho.
+
+---
+
 # AI Perfume Commercial Studio: Arquitetura técnica (proposta v1)
 
 > Documento aprovado; Fase 1 implementada (ver README). Os preços são estimativas
