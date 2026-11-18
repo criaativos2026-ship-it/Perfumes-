@@ -1,6 +1,6 @@
 # AI Perfume Commercial Studio: Arquitetura técnica (proposta v1)
 
-> Documento para aprovação **antes** da implementação. Os preços são estimativas
+> Documento aprovado; Fase 1 implementada (ver README). Os preços são estimativas
 > baseadas nas tabelas públicas que eu conhecia até meados de 2026. Eles devem ser
 > conferidos nas páginas oficiais de cada provedor antes de fechar o orçamento.
 
@@ -214,3 +214,21 @@ docker-compose.yml  api + worker + redis + postgres + frontend
 - **Rede do ambiente de execução:** os domínios das APIs (api.anthropic.com, generativelanguage.googleapis.com,
   api.klingai.com etc.) precisam estar liberados onde o sistema rodar.
 - **Tempo de geração:** de 5 a 20 minutos por comercial, a depender das filas dos provedores.
+
+---
+
+## 9. Decisões tomadas na Fase 1
+
+- **Guia da marca:** está em `brand/CLAUDE.md` (Virtus Parfums). As cores oficiais são bordeaux, marfim, preto e
+  os dois ouros. Ameixa e rosé ficam como proibidas.
+- **Guia × comercial cinematográfico:** cada perfume ganha um mundo visual próprio, filmado em luz baixa, perto do
+  preto da marca e com luz dourada. A **última cena é sempre o packshot boutique** do guia (seção 4.1).
+- **Som:** o guia pede só efeitos sonoros, sem música de fundo. Por isso a ElevenLabs entra para os efeitos, e a
+  geração de música fica opcional.
+- **Formatos:** os do guia (1080x1920 e 1080x1350) vêm primeiro, além de 16:9 e 1:1.
+- **Infraestrutura enxuta na Fase 1:** a orquestração usa tarefas `asyncio` com estado em SQLite, em um só
+  processo e sem Redis. A interface é HTML/JS sem etapa de build, servida pelo próprio FastAPI. Se for preciso
+  escalar, dá para trocar a orquestração por fila (Redis/arq) sem mudar os módulos.
+- **Pesquisa em duas chamadas:** a primeira usa `web_search` e `web_fetch` e gera um relatório com URLs; a
+  segunda converte o relatório em JSON estruturado. A checagem das URLs contra o que a busca de fato retornou é
+  feita pelo código.
