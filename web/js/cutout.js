@@ -94,3 +94,32 @@ function blur(src, w, h, r) {
   }
   return out;
 }
+
+// Recorte manual por formas: para fotos com cenário (sem fundo branco). Cada forma é um retângulo de
+// cantos arredondados em coordenadas normalizadas (0..1). Os pixels do frasco ficam exatamente como na foto.
+export async function cutoutShapes(blob, shapes, { maxSide = 1600 } = {}) {
+  const bmp = await createImageBitmap(blob);
+  const s = Math.min(1, maxSide / Math.max(bmp.width, bmp.height));
+  const w = Math.round(bmp.width * s), h = Math.round(bmp.height * s);
+  const px = shapes.map((r) => ({ x: r.x * w, y: r.y * h, w: r.w * w, h: r.h * h, r: (r.r || 0) * Math.min(r.w * w, r.h * h) }));
+  const x0 = Math.floor(Math.min(...px.map((r) => r.x))), y0 = Math.floor(Math.min(...px.map((r) => r.y)));
+  const x1 = Math.ceil(Math.max(...px.map((r) => r.x + r.w))), y1 = Math.ceil(Math.max(...px.map((r) => r.y + r.h)));
+  if (x1 - x0 < 8 || y1 - y0 < 8) throw new Error("Formas de recorte pequenas demais.");
+  const pad = 2;
+  const out = new OffscreenCanvas(x1 - x0 + pad * 2, y1 - y0 + pad * 2);
+  const g = out.getContext("2d");
+  g.translate(pad - x0, pad - y0);
+  g.beginPath();
+  for (const r of px) g.roundRect(r.x, r.y, r.w, r.h, r.r);
+  g.fillStyle = "#000";
+  g.fill();
+  g.globalCompositeOperation = "source-in";
+  g.drawImage(bmp, 0, 0, w, h);
+  return { canvas: out, info: { manual: true, coverage: ((x1 - x0) * (y1 - y0)) / (w * h) } };
+}
+
+// Formas iniciais para o editor manual (frasco centralizado com tampa).
+export const DEFAULT_SHAPES = [
+  { name: "corpo", x: 0.36, y: 0.42, w: 0.28, h: 0.28, r: 0.04 },
+  { name: "tampa", x: 0.45, y: 0.34, w: 0.1, h: 0.08, r: 0.08 },
+];

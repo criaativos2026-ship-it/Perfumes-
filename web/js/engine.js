@@ -85,7 +85,8 @@ export class Engine {
 
   prepare() {
     const k = this.k;
-    this.fogSprites = [...this.d.fog_colors, this.c.glow].map((h) => glowSprite(h, 512, 1.2));
+    this.fogHex = [...this.d.fog_colors, this.c.glow];
+    this.fogSprites = this.fogHex.map((h) => glowSprite(h, 512, 1.2));
     this.goldGlow = glowSprite(this.c.glow, 1024, 1.4);
     this.floorGlow = glowSprite(this.c.floor, 512, 1.1);
     this.dot = glowSprite(this.c.accent, 32, 0.6);
@@ -245,7 +246,9 @@ export class Engine {
       const size = (0.9 + hash(i, seed) * 0.9) * H;
       const x = W * (hash(i, seed + 1) * 1.2 - 0.1) + Math.sin(t * 0.13 * v + i * 2.1) * W * 0.12;
       const y = H * (hash(i, seed + 2) * 1.1 - 0.05) + Math.cos(t * 0.09 * v + i) * H * 0.06;
-      ctx.globalAlpha = amount * (0.16 + 0.1 * Math.sin(t * 0.3 * v + i * 1.7));
+      const [r, g, b] = rgb(this.fogHex[i % this.fogHex.length]);
+      const lum = (r + g + b) / 765; // cores escuras precisam de mais intensidade para aparecer
+      ctx.globalAlpha = clamp(amount * (0.22 + 0.1 * Math.sin(t * 0.3 * v + i * 1.7)) * (0.9 + (0.25 - Math.min(lum, 0.25)) * 4));
       ctx.drawImage(spr, x - size / 2, y - size / 2, size, size);
     }
     ctx.restore();

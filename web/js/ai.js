@@ -225,6 +225,8 @@ export function normalizeDirection(d, { brand, profile, duration }) {
   const total = scenes.reduce((a, s) => a + s.duration_s, 0);
   const k = duration / total;
   scenes.forEach((s, i) => { s.duration_s = Math.round(s.duration_s * k * 10) / 10; s.index = i + 1; });
+  const drift = duration - scenes.reduce((a, s) => a + s.duration_s, 0);
+  scenes.at(-1).duration_s = Math.round((scenes.at(-1).duration_s + drift) * 10) / 10;
   d.scenes = scenes;
   return { direction: d, warnings };
 }

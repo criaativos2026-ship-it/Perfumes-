@@ -3,7 +3,7 @@ import { parseBrand, upsertProduct, joinNotes } from "./brand.js";
 import { identify, research, createDirection, similarity, AIError, PARTICLES, CAMERAS, TRANSITIONS, SCENE_TYPES } from "./ai.js";
 import { GLYPHS } from "./glyphs.js";
 import { Engine } from "./engine.js";
-import { cutout } from "./cutout.js";
+import { cutout, cutoutShapes, DEFAULT_SHAPES } from "./cutout.js";
 import { renderSoundtrack } from "./audio.js";
 import { exportMP4 } from "./export.js";
 import * as store from "./store.js";
@@ -35,7 +35,7 @@ async function task(label, fn) {
   renderProject();
   try {
     await fn();
-    status("");
+    if ($("#status").classList.contains("busy")) status(""); // mantém avisos deixados pela etapa
   } catch (e) {
     if (e.name === "AbortError") status("Cancelado.");
     else { console.error(e); status(e instanceof AIError ? e.message : "Erro: " + (e.message || e), "error"); }
@@ -131,6 +131,7 @@ async function openProject(id) {
   f.brand.value = ci.brand || ""; f.product_name.value = ci.product_name || ""; f.concentration.value = ci.concentration || "";
   $("#tolerance").value = P.tolerance;
   renderProject();
+  if (P.approved != null) renderCutEditor();
   if (P.approved != null) await startPreview();
 }
 
@@ -199,11 +200,71 @@ $("#approveBtn").addEventListener("click", () => task("Recortando o frasco e mon
 }));
 
 async function makeCutout() {
-  const { canvas, info } = await cutout(P.photo, { tolerance: Number(P.tolerance) });
-  P.cutout = await canvas.convertToBlob({ type: "image/png" });
-  P.cutoutInfo = info;
+  let res;
+  if (P.cutMode === "manual") {
+    res = await cutoutShapes(P.photo, P.shapes || DEFAULT_SHAPES);
+  } else {
+    res = await cutout(P.photo, { tolerance: Number(P.tolerance) });
+    // fundo não removido (foto com cenário): passa para o recorte manual
+    if (res.info.coverage > 0.85 || P.identification?.white_background === false) {
+      P.cutMode = "manual";
+      P.shapes ||= structuredClone(DEFAULT_SHAPES);
+      res = await cutoutShapes(P.photo, P.shapes);
+      status("A foto tem cenário ao fundo. Ajuste o recorte manual em Cenas → Recorte do frasco.", "error");
+      setTimeout(() => { $(".cut").open = true; }, 100);
+    }
+  }
+  P.cutout = await res.canvas.convertToBlob({ type: "image/png" });
+  P.cutoutInfo = res.info;
   bottleBitmap = await createImageBitmap(P.cutout);
+  renderCutEditor();
 }
+
+// ---------- editor manual do recorte ----------
+function renderCutEditor() {
+  const manual = P.cutMode === "manual";
+  document.querySelector(`#cutMode input[value="${manual ? "manual" : "auto"}"]`).checked = true;
+  $("#cutAuto").hidden = manual;
+  $("#cutManual").hidden = !manual;
+  if (!manual) return;
+  P.shapes ||= structuredClone(DEFAULT_SHAPES);
+  $("#shapesImg").src = URL.createObjectURL(P.photo);
+  $("#radius").value = P.shapes[0].r;
+  const box = $("#shapes");
+  box.querySelectorAll(".shape").forEach((el) => el.remove());
+  P.shapes.forEach((sh, i) => {
+    const el = document.createElement("div");
+    el.className = "shape";
+    el.innerHTML = `<b>${sh.name}</b><i></i>`;
+    const place = () => Object.assign(el.style, { left: sh.x * 100 + "%", top: sh.y * 100 + "%", width: sh.w * 100 + "%", height: sh.h * 100 + "%", borderRadius: `${sh.r * 100}% / ${sh.r * 100 * sh.w / sh.h}%` });
+    place();
+    el.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      el.setPointerCapture(e.pointerId);
+      const rect = box.getBoundingClientRect();
+      const resize = e.target.tagName === "I";
+      const start = { x: e.clientX, y: e.clientY, sh: { ...sh } };
+      const move = (ev) => {
+        const dx = (ev.clientX - start.x) / rect.width, dy = (ev.clientY - start.y) / rect.height;
+        if (resize) { sh.w = Math.max(0.02, Math.min(1 - sh.x, start.sh.w + dx)); sh.h = Math.max(0.02, Math.min(1 - sh.y, start.sh.h + dy)); }
+        else { sh.x = Math.max(0, Math.min(1 - sh.w, start.sh.x + dx)); sh.y = Math.max(0, Math.min(1 - sh.h, start.sh.y + dy)); }
+        place();
+      };
+      const up = () => { el.removeEventListener("pointermove", move); el.removeEventListener("pointerup", up); store.saveProject(P); };
+      el.addEventListener("pointermove", move);
+      el.addEventListener("pointerup", up);
+    });
+    box.appendChild(el);
+  });
+}
+
+$("#cutMode").addEventListener("change", (e) => {
+  P.cutMode = e.target.value;
+  renderCutEditor();
+  if (P.cutMode === "auto") task("Refazendo o recorte…", async () => { await makeCutout(); await startPreview(); });
+});
+$("#radius").addEventListener("input", (e) => { P.shapes.forEach((sh, i) => (sh.r = i === 0 ? Number(e.target.value) : Math.max(Number(e.target.value), sh.r))); renderCutEditor(); });
+$("#applyShapes").addEventListener("click", () => task("Aplicando o recorte…", async () => { await makeCutout(); await startPreview(); }));
 
 let tolTimer = null;
 $("#tolerance").addEventListener("input", (e) => {

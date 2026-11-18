@@ -109,9 +109,22 @@
       </div>
       <details class="cut">
         <summary>Recorte do frasco</summary>
+        <fieldset class="seg" id="cutMode">
+          <label><input type="radio" name="cutmode" value="auto" checked><span>Automático<small>foto em fundo branco</small></span></label>
+          <label><input type="radio" name="cutmode" value="manual"><span>Manual<small>foto com cenário</small></span></label>
+        </fieldset>
+        <div id="cutAuto">
+          <label>Sensibilidade do recorte <input type="range" id="tolerance" min="8" max="70" value="28"></label>
+          <p class="hint">Se aparecer borda branca, aumente. Se o frasco perder partes, diminua.</p>
+        </div>
+        <div id="cutManual" hidden>
+          <p class="hint">Arraste os quadros para cobrir o corpo e a tampa do frasco. Use o canto inferior direito de cada quadro para mudar o tamanho.</p>
+          <div class="shapes" id="shapes"><img id="shapesImg" alt="Foto"></div>
+          <label>Cantos arredondados <input type="range" id="radius" min="0" max="0.3" step="0.01" value="0.04"></label>
+          <button type="button" class="primary" id="applyShapes">Aplicar recorte</button>
+        </div>
+        <p class="hint">Resultado:</p>
         <img id="cutImg" alt="Recorte">
-        <label>Sensibilidade do recorte <input type="range" id="tolerance" min="8" max="70" value="28"></label>
-        <p class="hint">Se aparecer borda branca, aumente. Se o frasco perder partes, diminua.</p>
       </details>
       <ol class="scenes" id="scenes"></ol>
     </section>
