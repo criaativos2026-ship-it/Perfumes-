@@ -690,7 +690,7 @@ export class Engine {
       const w = this.plate.width * sc, h = this.plate.height * sc;
       this.plateRect = { x: (this.W - w) / 2, y: (this.H - h) / 2, w, h };
       // versão desfocada (para notas e fechamento)
-      const small = canvas(Math.max(8, Math.round(this.plate.width / 14)), Math.max(8, Math.round(this.plate.height / 14)));
+      const small = canvas(Math.max(8, Math.round(this.plate.width / 30)), Math.max(8, Math.round(this.plate.height / 30)));
       const g = small.getContext("2d");
       g.imageSmoothingQuality = "high";
       g.drawImage(this.plate, 0, 0, small.width, small.height);
@@ -858,10 +858,10 @@ export class Engine {
     const { ctx, W, H } = this;
     const r = this.plateRect;
     const look = {
-      abertura: { blur: true, dark: 0.86 }, atmosfera: { dark: 0.12 }, ingrediente: { blur: true, dark: 0.55 },
+      abertura: { blur: true, dark: 0.9 }, atmosfera: { dark: 0.12 }, ingrediente: { blur: true, dark: 0.6 },
       frasco_revelacao: { dark: lerp(0.95, 0.1, easeInOut(ramp(lt, 0, dur * 0.8))) }, frasco_luz: { dark: 0.08 },
-      vortice: { dark: 0.12 }, orbita_ingredientes: { dark: 0.12 }, close_ingrediente: { blur: true, dark: 0.35 },
-      notas: { blur: true, dark: 0.72 }, packshot: { blur: true, dark: 0.66 },
+      vortice: { dark: 0.12 }, orbita_ingredientes: { dark: 0.12 }, close_ingrediente: { blur: true, dark: 0.5 },
+      notas: { blur: true, dark: 0.86 }, packshot: { blur: true, dark: 0.84 },
     }[type] || { dark: 0.2 };
     ctx.save();
     ctx.imageSmoothingQuality = "high";
