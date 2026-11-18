@@ -123,3 +123,27 @@ export const DEFAULT_SHAPES = [
   { name: "corpo", x: 0.36, y: 0.42, w: 0.28, h: 0.28, r: 0.04 },
   { name: "tampa", x: 0.45, y: 0.34, w: 0.1, h: 0.08, r: 0.08 },
 ];
+
+// Ingrediente fotografado com fundo (não branco): recorta um oval suave ao centro, que se funde ao cenário.
+export async function softOval(blob, { maxSide = 1200, inset = 0.06 } = {}) {
+  const bmp = await createImageBitmap(blob);
+  const s = Math.min(1, maxSide / Math.max(bmp.width, bmp.height));
+  const w = Math.round(bmp.width * s), h = Math.round(bmp.height * s);
+  const c = new OffscreenCanvas(w, h);
+  const g = c.getContext("2d");
+  g.drawImage(bmp, 0, 0, w, h);
+  g.globalCompositeOperation = "destination-in";
+  const grd = g.createRadialGradient(w / 2, h / 2, Math.min(w, h) * 0.3, w / 2, h / 2, Math.min(w, h) * (0.5 - inset));
+  grd.addColorStop(0, "rgba(0,0,0,1)");
+  grd.addColorStop(1, "rgba(0,0,0,0)");
+  g.fillStyle = grd;
+  g.fillRect(0, 0, w, h);
+  return { canvas: c, info: { oval: true } };
+}
+
+// Escolhe o melhor recorte para a foto de um ingrediente.
+export async function ingredientCutout(blob) {
+  const auto = await cutout(blob, { tolerance: 30 });
+  if (auto.info.alreadyTransparent || auto.info.coverage <= 0.85) return auto;
+  return softOval(blob);
+}

@@ -115,6 +115,9 @@ export const SCENE_TYPES = {
   ingrediente: "ilustrações em traço dourado fino dos ingredientes se desenhando e flutuando, com partículas",
   frasco_revelacao: "o frasco real surge da escuridão com o foco de luz dourada crescendo e aproximação lenta",
   frasco_luz: "brilho dourado diagonal atravessa o frasco real, partículas orbitam, reflexo no piso",
+  vortice: "FOTOS REAIS dos ingredientes saem do gargalo e sobem girando em redemoinho ao redor do frasco, com fitas douradas",
+  orbita_ingredientes: "FOTOS REAIS dos ingredientes giram em 3D ao redor do frasco, passando na frente e atrás dele",
+  close_ingrediente: "close em FOTOS REAIS de 1 ou 2 ingredientes flutuando, com outros desfocados ao fundo e à frente",
   notas: "as notas de topo, coração e fundo entram uma a uma em três colunas",
   packshot: "fechamento boutique: frasco, nome, fabricante, CTA (sempre a última cena)",
 };
@@ -142,6 +145,7 @@ const DIRECTION_SCHEMA = obj({
     particles: S("string", { enum: PARTICLES }),
     particle_density: S("number"),
     glyphs: S("array", { items: S("string", { enum: Object.keys(GLYPHS) }) }),
+    notes: STRS,
     camera: S("string", { enum: CAMERAS }),
     transition_in: S("string", { enum: TRANSITIONS }),
     text: STR,
@@ -180,15 +184,20 @@ Regras:
 - Textos na tela em português do Brasil, curtos, caixa de sentença, no tom do guia; "" quando a cena não tiver texto.
   Nada de caixa alta (exceto logotipo), emojis ou exageros.
 - end_card.top/heart/base: notas separadas por vírgulas e "e" no final (padrão do guia). end_card.cta conforme o guia.
-- particle_density entre 0 e 1. Uma ideia por cena, pausas longas, elegância pelo espaço vazio.`;
+- particle_density entre 0 e 1. Uma ideia por cena, pausas longas, elegância pelo espaço vazio.
+- Estilo de referência do cliente: comercial com ingredientes REAIS voando ao redor do frasco. Prefira as cenas
+  vortice, orbita_ingredientes e close_ingrediente para apresentar as notas (topo, depois coração, depois fundo),
+  e use "ingrediente" (traço dourado) só para notas sem foto. Em cada cena, "notes" lista as notas exatas da ficha
+  que aparecem nela; nas demais cenas, "notes" é [].`;
 }
 
-export async function createDirection(cfg, { brand, ident, profile, duration, previous, feedback }) {
+export async function createDirection(cfg, { brand, ident, profile, duration, previous, feedback, photos }) {
   const [minS, maxS] = DURATION_SCENES[duration] || [6, 8];
   const avoid = previous.map((p) => `- ${p.environment}: ${p.key_elements.join(", ")}`).join("\n") || "- (nenhum ainda)";
   const brief = `Duração total: ${duration} s, entre ${minS} e ${maxS} cenas.
 Frasco: ${ident.bottle_description}
 Ficha olfativa (JSON): ${JSON.stringify(profile)}
+Notas com foto real disponível: ${(photos || []).join(", ") || "(o cliente ainda vai enviar; planeje as fotos para todas as notas principais)"}
 Conceitos já usados (NÃO repetir):
 ${avoid}
 ${feedback ? "Pedido do usuário para esta versão: " + feedback : ""}`;
@@ -221,6 +230,7 @@ export function normalizeDirection(d, { brand, profile, duration }) {
     s.duration_s = Math.min(7, Math.max(2, Number(s.duration_s) || 3));
     s.particle_density = Math.min(1, Math.max(0, Number(s.particle_density) || 0));
     s.glyphs = (s.glyphs || []).slice(0, 3);
+    s.notes = (s.notes || []).filter((n) => notes.has(n.toLowerCase().trim()));
   }
   const total = scenes.reduce((a, s) => a + s.duration_s, 0);
   const k = duration / total;

@@ -107,6 +107,18 @@
           <span id="time">0,0 s</span>
         </div>
       </div>
+      <details class="assets" id="assets" open>
+        <summary>Cenário e ingredientes (fotos reais)</summary>
+        <p class="hint">Envie uma imagem de cenário vertical <b>sem textos, logos ou moldura</b>, combinando com as notas, e uma foto de cada ingrediente (de preferência em fundo branco).</p>
+        <label class="button">Enviar imagem de cenário<input type="file" id="bgFile" accept="image/*" hidden></label>
+        <div id="bgBox" hidden>
+          <img id="bgImg" alt="Cenário">
+          <label class="check"><input type="checkbox" id="bottleInBg"> O frasco já está nesta imagem (ajuste o recorte abaixo)</label>
+          <button type="button" id="bgRemove">Remover cenário</button>
+        </div>
+        <h3>Ingredientes</h3>
+        <ul class="ings" id="ingList"></ul>
+      </details>
       <details class="cut">
         <summary>Recorte do frasco</summary>
         <fieldset class="seg" id="cutMode">

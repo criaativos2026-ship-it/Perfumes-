@@ -3,7 +3,7 @@ import { parseBrand, upsertProduct, joinNotes } from "./brand.js";
 import { identify, research, createDirection, similarity, AIError, PARTICLES, CAMERAS, TRANSITIONS, SCENE_TYPES } from "./ai.js";
 import { GLYPHS } from "./glyphs.js";
 import { Engine } from "./engine.js";
-import { cutout, cutoutShapes, DEFAULT_SHAPES } from "./cutout.js";
+import { cutout, cutoutShapes, ingredientCutout, DEFAULT_SHAPES } from "./cutout.js";
 import { renderSoundtrack } from "./audio.js";
 import { exportMP4 } from "./export.js";
 import * as store from "./store.js";
@@ -131,7 +131,8 @@ async function openProject(id) {
   f.brand.value = ci.brand || ""; f.product_name.value = ci.product_name || ""; f.concentration.value = ci.concentration || "";
   $("#tolerance").value = P.tolerance;
   renderProject();
-  if (P.approved != null) renderCutEditor();
+  assetsCache = null;
+  if (P.approved != null) { renderCutEditor(); renderAssets(); }
   if (P.approved != null) await startPreview();
 }
 
@@ -162,7 +163,7 @@ $("#redoResearch").addEventListener("click", runResearch);
 function runDirection(feedback = null) {
   task("Criando o conceito com o guia da marca…", async () => {
     const previous = store.fingerprints.all().filter((f) => f.id !== P.id);
-    const args = { brand, ident: P.identification, profile: P.research.profile, duration: P.options.duration, previous, feedback };
+    const args = { brand, ident: P.identification, profile: P.research.profile, duration: P.options.duration, previous, feedback, photos: (P.ingredients || []).map((i) => i.note) };
     let out = await createDirection(aiCfg(), args);
     const clash = previous.find((p) => similarity(out.direction.fingerprint, p) >= 0.5);
     if (clash) {
@@ -195,21 +196,26 @@ $("#approveBtn").addEventListener("click", () => task("Recortando o frasco e mon
 `;
   const updated = upsertProduct(brand.raw, card);
   if (updated) { store.brandStore.set(updated); brand = parseBrand(updated); }
+  assetsCache = null;
   await startPreview();
+  renderAssets();
   setTimeout(() => $("#s-scenes").scrollIntoView({ behavior: "smooth" }), 50);
 }));
 
+const cutSource = () => (P.bottleInBg && P.background ? P.background : P.photo);
+
 async function makeCutout() {
   let res;
+  if (P.bottleInBg && P.background) P.cutMode = "manual";
   if (P.cutMode === "manual") {
-    res = await cutoutShapes(P.photo, P.shapes || DEFAULT_SHAPES);
+    res = await cutoutShapes(cutSource(), P.shapes || DEFAULT_SHAPES);
   } else {
-    res = await cutout(P.photo, { tolerance: Number(P.tolerance) });
-    // fundo não removido (foto com cenário): passa para o recorte manual
+    try { res = await cutout(P.photo, { tolerance: Number(P.tolerance) }); } catch { res = { info: { coverage: 1 } }; }
+    // fundo não removido (foto com cenário) ou recorte impossível: passa para o recorte manual
     if (res.info.coverage > 0.85 || P.identification?.white_background === false) {
       P.cutMode = "manual";
       P.shapes ||= structuredClone(DEFAULT_SHAPES);
-      res = await cutoutShapes(P.photo, P.shapes);
+      res = await cutoutShapes(cutSource(), P.shapes);
       status("A foto tem cenário ao fundo. Ajuste o recorte manual em Cenas → Recorte do frasco.", "error");
       setTimeout(() => { $(".cut").open = true; }, 100);
     }
@@ -228,7 +234,7 @@ function renderCutEditor() {
   $("#cutManual").hidden = !manual;
   if (!manual) return;
   P.shapes ||= structuredClone(DEFAULT_SHAPES);
-  $("#shapesImg").src = URL.createObjectURL(P.photo);
+  $("#shapesImg").src = URL.createObjectURL(cutSource());
   $("#radius").value = P.shapes[0].r;
   const box = $("#shapes");
   box.querySelectorAll(".shape").forEach((el) => el.remove());
@@ -264,7 +270,7 @@ $("#cutMode").addEventListener("change", (e) => {
   if (P.cutMode === "auto") task("Refazendo o recorte…", async () => { await makeCutout(); await startPreview(); });
 });
 $("#radius").addEventListener("input", (e) => { P.shapes.forEach((sh, i) => (sh.r = i === 0 ? Number(e.target.value) : Math.max(Number(e.target.value), sh.r))); renderCutEditor(); });
-$("#applyShapes").addEventListener("click", () => task("Aplicando o recorte…", async () => { await makeCutout(); await startPreview(); }));
+$("#applyShapes").addEventListener("click", () => task("Aplicando o recorte…", async () => { await makeCutout(); await refreshVisuals(); }));
 
 let tolTimer = null;
 $("#tolerance").addEventListener("input", (e) => {
@@ -273,12 +279,81 @@ $("#tolerance").addEventListener("input", (e) => {
   tolTimer = setTimeout(() => task("Refazendo o recorte…", async () => { await makeCutout(); await startPreview(); }), 350);
 });
 
+// ---------- cenário e ingredientes (fotos reais) ----------
+let assetsCache = null;
+async function buildAssets() {
+  if (assetsCache) return assetsCache;
+  const a = { ingredients: [] };
+  if (P.background) {
+    a.background = await createImageBitmap(P.background);
+    if (P.bottleInBg && P.shapes) {
+      const x0 = Math.min(...P.shapes.map((r) => r.x)), y0 = Math.min(...P.shapes.map((r) => r.y));
+      const x1 = Math.max(...P.shapes.map((r) => r.x + r.w)), y1 = Math.max(...P.shapes.map((r) => r.y + r.h));
+      a.bottleRect = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+    }
+  }
+  for (const it of P.ingredients || []) a.ingredients.push({ note: it.note, image: await createImageBitmap(it.cutout) });
+  return (assetsCache = a);
+}
+
+function profileNotes() {
+  const pr = P.research?.profile;
+  if (!pr) return [];
+  return [...new Set([...pr.top_notes, ...pr.heart_notes, ...pr.base_notes, ...pr.key_ingredients].map((n) => n.trim()).filter(Boolean))];
+}
+
+function renderAssets() {
+  $("#bgBox").hidden = !P.background;
+  if (P.background) $("#bgImg").src = URL.createObjectURL(P.background);
+  $("#bottleInBg").checked = !!P.bottleInBg;
+  const pr = P.research?.profile || { top_notes: [], heart_notes: [], base_notes: [] };
+  const where = (n) => pr.top_notes.includes(n) ? "topo" : pr.heart_notes.includes(n) ? "coração" : pr.base_notes.includes(n) ? "fundo" : "ingrediente";
+  $("#ingList").innerHTML = profileNotes().map((n) => {
+    const it = (P.ingredients || []).find((i) => i.note === n);
+    return `<li><img class="thumb" ${it ? `src="${URL.createObjectURL(it.cutout)}"` : 'alt=""'}>
+      <span class="name">${esc(n)}<small>${where(n)}${it ? "" : " · sem foto"}</small></span>
+      <span>${it ? `<button class="icon" data-ing-del="${esc(n)}">Remover</button>` : `<label class="button">Foto<input type="file" accept="image/*" data-ing="${esc(n)}" hidden></label>`}</span></li>`;
+  }).join("");
+}
+
+async function refreshVisuals() { assetsCache = null; await startPreview(); renderAssets(); }
+
+$("#bgFile").addEventListener("change", (e) => {
+  const f = e.target.files[0];
+  if (!f) return;
+  task("Carregando o cenário…", async () => { P.background = f; await refreshVisuals(); });
+});
+$("#bgRemove").addEventListener("click", () => task("Removendo o cenário…", async () => {
+  P.background = null; P.bottleInBg = false; P.cutMode = "auto"; await makeCutout(); await refreshVisuals();
+}));
+$("#bottleInBg").addEventListener("change", (e) => task("Ajustando o frasco no cenário…", async () => {
+  P.bottleInBg = e.target.checked;
+  if (P.bottleInBg) { P.cutMode = "manual"; P.shapes ||= structuredClone(DEFAULT_SHAPES); $(".cut").open = true; status("Ajuste os quadros sobre o frasco do cenário e toque em Aplicar recorte.", "error"); }
+  else P.cutMode = "auto";
+  await makeCutout(); await refreshVisuals();
+}));
+$("#ingList").addEventListener("change", (e) => {
+  const note = e.target.dataset.ing, f = e.target.files?.[0];
+  if (!note || !f) return;
+  task(`Recortando a foto de ${note}…`, async () => {
+    const { canvas } = await ingredientCutout(f);
+    P.ingredients = (P.ingredients || []).filter((i) => i.note !== note);
+    P.ingredients.push({ note, cutout: await canvas.convertToBlob({ type: "image/png" }) });
+    await refreshVisuals();
+  });
+});
+$("#ingList").addEventListener("click", (e) => {
+  const note = e.target.dataset.ingDel;
+  if (!note) return;
+  task("Removendo…", async () => { P.ingredients = P.ingredients.filter((i) => i.note !== note); await refreshVisuals(); });
+});
+
 // ---------- prévia ----------
 async function startPreview() {
   stopPreview();
   const [w, h] = SIZES[P.options.aspect];
   const s = 540 / w;
-  const engine = new Engine({ canvas: $("#preview"), brand, direction: P.edit, bottle: bottleBitmap, width: Math.round(w * s), height: Math.round(h * s) });
+  const engine = new Engine({ canvas: $("#preview"), brand, direction: P.edit, bottle: bottleBitmap, width: Math.round(w * s), height: Math.round(h * s), assets: await buildAssets() });
   preview = { engine, playing: false, t: Math.min(engine.timeline[0].dur * 0.95, engine.duration - 0.1), raf: 0, last: 0 };
   drawPreview();
   renderScenes();
@@ -349,6 +424,7 @@ function renderScenes() {
         <label>Quantidade<input data-k="particle_density" type="range" min="0" max="1" step="0.05" value="${s.particle_density}"></label>
         <label>Câmera<select data-k="camera">${opt(CAMERAS, s.camera)}</select></label>
         <label>Entrada<select data-k="transition_in">${opt(TRANSITIONS, s.transition_in)}</select></label>
+        ${["vortice", "orbita_ingredientes", "close_ingrediente"].includes(s.type) ? `<div class="glyphs">${profileNotes().map((n) => `<label><input type="checkbox" data-note="${esc(n)}" ${(s.notes || []).includes(n) ? "checked" : ""}>${esc(n)}</label>`).join("")}</div>` : ""}
         ${s.type === "ingrediente" ? `<div class="glyphs">${Object.keys(GLYPHS).map((g) => `<label><input type="checkbox" data-glyph="${g}" ${s.glyphs.includes(g) ? "checked" : ""}>${g.replace("_", " ")}</label>`).join("")}</div>` : ""}
         <div class="row"><button data-act="play">Ver cena</button><button data-act="vary">Variar movimento</button></div>
       </div>
@@ -361,7 +437,9 @@ $("#scenes").addEventListener("input", (e) => {
   if (!det) return;
   const s = P.edit.scenes[Number(det.dataset.i)];
   const k = e.target.dataset.k;
-  if (e.target.dataset.glyph) {
+  if (e.target.dataset.note) {
+    s.notes = [...det.querySelectorAll("[data-note]:checked")].map((x) => x.dataset.note);
+  } else if (e.target.dataset.glyph) {
     s.glyphs = [...det.querySelectorAll("[data-glyph]:checked")].map((x) => x.dataset.glyph).slice(0, 3);
   } else if (k) {
     s[k] = e.target.type === "number" || e.target.type === "range" ? Number(e.target.value) : e.target.value;
@@ -388,7 +466,7 @@ $("#exportBtn").addEventListener("click", () => {
     if (preview?.playing) $("#playBtn").click();
     const [w, h] = SIZES[P.options.aspect];
     const cv = document.createElement("canvas");
-    const engine = new Engine({ canvas: cv, brand, direction: P.edit, bottle: bottleBitmap, width: w, height: h });
+    const engine = new Engine({ canvas: cv, brand, direction: P.edit, bottle: bottleBitmap, width: w, height: h, assets: await buildAssets() });
     status("Criando os efeitos sonoros…", "busy");
     const audio = await renderSoundtrack(P.edit.scenes, engine.duration);
     const out = await exportMP4(engine, audio, {

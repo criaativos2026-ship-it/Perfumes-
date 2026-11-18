@@ -60,7 +60,7 @@ function wrap(ctx, text, maxW) {
 
 // ---------- motor ----------
 export class Engine {
-  constructor({ canvas: cv, brand, direction, bottle, width, height }) {
+  constructor({ canvas: cv, brand, direction, bottle, width, height, assets = {} }) {
     measureGlyphs();
     this.cv = cv;
     this.ctx = cv.getContext("2d");
@@ -70,8 +70,10 @@ export class Engine {
     this.brand = brand;
     this.c = brand.colors;
     this.bottle = bottle;
+    this.assets = assets;
     this.setDirection(direction);
     this.prepare();
+    this.preparePhoto();
   }
 
   setDirection(d) {
@@ -138,7 +140,16 @@ export class Engine {
     if (i > 0 && lt < TRANSITION) {
       const prev = this.timeline[i - 1];
       const u = lt / TRANSITION;
-      const kind = cur.scene.transition_in;
+      let kind = cur.scene.transition_in;
+      // duas cenas com o frasco em primeiro plano: fusão mostraria dois frascos; usa corte seco com brilho
+      const HERO = ["frasco_revelacao", "frasco_luz", "vortice", "orbita_ingredientes"];
+      if (kind !== "fade_preto" && HERO.includes(prev.scene.type) && HERO.includes(cur.scene.type)) kind = "corte";
+      if (kind === "corte") {
+        this.drawScene(cur, lt);
+        if (u < 0.45) this.flash(0.6 * (1 - u / 0.45));
+        this.overlay(t);
+        return;
+      }
       if (kind === "fade_preto") {
         if (u < 0.5) { this.drawScene(prev, prev.dur + lt); this.black(easeInOut(u * 2)); }
         else { this.drawScene(cur, lt); this.black(1 - easeInOut((u - 0.5) * 2)); }
@@ -221,8 +232,15 @@ export class Engine {
     ctx.fillStyle = this.c.background;
     ctx.fillRect(0, 0, W, H);
     const fogAmount = { atmosfera: 1, ingrediente: 0.6, abertura: 0.35, notas: 0.45, packshot: 0.3, frasco_revelacao: 0.5, frasco_luz: 0.5 }[s.type] ?? 0.5;
-    this.depth(cam, 0.3);
-    this.fog(lt, seed, fogAmount);
+    if (this.plate) {
+      this.depth(cam, 1);
+      this.drawPlate(s.type, lt, entry.dur);
+      this.depth(cam, 0.3);
+      this.fog(lt, seed, fogAmount * 0.35);
+    } else {
+      this.depth(cam, 0.3);
+      this.fog(lt, seed, fogAmount);
+    }
     if (s.type === "atmosfera") this.rays(lt, seed);
     this.depth(cam, 0.6);
     this.particles(s, lt, seed, "back");
@@ -612,17 +630,15 @@ export class Engine {
   }
 
   scene_frasco_revelacao(s, lt, dur) {
+    if (this.photoBottle) { this.drawHero(this.heroBox(), lt, dur); return; } // a revelação vem da luz do cenário
     const p = ramp(lt, 0, dur * 0.7);
-    const z = lerp(0.9, 1.0, easeOut(ramp(lt, 0, dur)));
-    const h = this.H * 0.5 * z;
-    const box = this.bottleBox(h, this.H * 0.5 + h * 0.5);
+    const box = this.heroBox();
     this.drawBottle(box, { alpha: easeInOut(p), glow: easeOut(ramp(lt, 0, dur * 0.5)), floor: easeOut(ramp(lt, dur * 0.3, dur * 0.8)) });
   }
 
   scene_frasco_luz(s, lt, dur) {
-    const h = this.H * 0.52;
-    const box = this.bottleBox(h, this.H * 0.5 + h * 0.5);
-    this.drawBottle(box, { sweep: ramp(lt, dur * 0.15, dur * 0.85) });
+    if (this.photoBottle) { this.drawHero(this.heroBox(), lt, dur, { sweep: ramp(lt, dur * 0.15, dur * 0.85) }); return; }
+    this.drawBottle(this.heroBox(), { sweep: ramp(lt, dur * 0.15, dur * 0.85) });
   }
 
   scene_notas(s, lt, dur) {
@@ -651,4 +667,234 @@ export class Engine {
     this.notes(L.notes, [0.45, 0.55, 0.65].map((a) => ramp(lt, dur * a - 0.6, dur * a + 0.2)));
     this.cta(ramp(lt, dur * 0.72, dur * 0.72 + 0.7));
   }
+  // =====================================================================
+  // MODO FOTOGRÁFICO: cenário real, frasco real e ingredientes reais em 3D
+  // =====================================================================
+  preparePhoto() {
+    const a = this.assets;
+    this.plate = a.background || null;
+    this.ingredients = [];
+    if (this.plate) {
+      // cobre a tela com 8% de folga para os movimentos de câmera
+      const sc = Math.max(this.W / this.plate.width, this.H / this.plate.height) * 1.08;
+      const w = this.plate.width * sc, h = this.plate.height * sc;
+      this.plateRect = { x: (this.W - w) / 2, y: (this.H - h) / 2, w, h };
+      // versão desfocada (para notas e fechamento)
+      const small = canvas(Math.max(8, Math.round(this.plate.width / 14)), Math.max(8, Math.round(this.plate.height / 14)));
+      const g = small.getContext("2d");
+      g.imageSmoothingQuality = "high";
+      g.drawImage(this.plate, 0, 0, small.width, small.height);
+      this.plateBlur = small;
+      if (a.bottleRect) {
+        const r = a.bottleRect, pr = this.plateRect;
+        this.photoBottle = { x: pr.x + r.x * pr.w, y: pr.y + r.y * pr.h, w: r.w * pr.w, h: r.h * pr.h };
+      }
+    }
+    for (const it of a.ingredients || []) {
+      this.ingredients.push({ note: it.note.toLowerCase().trim(), levels: blurLevels(it.image) });
+    }
+  }
+
+  drawPlate(type, lt, dur) {
+    const { ctx, W, H } = this;
+    const r = this.plateRect;
+    const look = {
+      abertura: { blur: true, dark: 0.86 }, atmosfera: { dark: 0.12 }, ingrediente: { blur: true, dark: 0.55 },
+      frasco_revelacao: { dark: lerp(0.95, 0.1, easeInOut(ramp(lt, 0, dur * 0.8))) }, frasco_luz: { dark: 0.08 },
+      vortice: { dark: 0.12 }, orbita_ingredientes: { dark: 0.12 }, close_ingrediente: { blur: true, dark: 0.35 },
+      notas: { blur: true, dark: 0.72 }, packshot: { blur: true, dark: 0.66 },
+    }[type] || { dark: 0.2 };
+    ctx.save();
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(look.blur ? this.plateBlur : this.plate, r.x, r.y, r.w, r.h);
+    // tratamento de cor da marca: sombras quentes, perto do preto oficial
+    ctx.globalCompositeOperation = "multiply";
+    ctx.fillStyle = rgba(this.c.soft, 0.18);
+    ctx.fillRect(0, 0, W, H);
+    ctx.globalCompositeOperation = "source-over";
+    ctx.fillStyle = rgba(this.c.background, look.dark);
+    ctx.fillRect(-W, -H, W * 3, H * 3);
+    ctx.restore();
+  }
+
+  // posição do frasco: onde ele está no cenário, ou centralizado sobre o piso
+  heroBox() {
+    if (this.photoBottle) return { ...this.photoBottle, inPlate: true };
+    const h = this.H * (this.H / this.W > 1.5 ? 0.46 : 0.5);
+    return { ...this.bottleBox(h, this.H * 0.76), inPlate: false };
+  }
+
+  drawHero(box, lt, dur, { sweep = -1 } = {}) {
+    if (!this.bottle) return;
+    if (box.inPlate) {
+      // o frasco já está na foto: redesenha o recorte exatamente por cima (para os ingredientes passarem atrás)
+      const { ctx } = this;
+      if (sweep >= 0) { this.drawBottle(box, { sweep, glow: 0, floor: 0 }); return; }
+      ctx.drawImage(this.bottle, box.x, box.y, box.w, box.h);
+    } else {
+      this.drawBottle(box, { sweep });
+    }
+  }
+
+  spritesFor(s) {
+    if (!this.ingredients.length) return [];
+    const wanted = (s.notes || []).map((n) => n.toLowerCase().trim());
+    const m = this.ingredients.filter((i) => wanted.some((w) => i.note.includes(w) || w.includes(i.note)));
+    return m.length ? m : this.ingredients;
+  }
+
+  // posições 3D de cada ingrediente para o instante lt
+  items3D(s, lt, mode, box) {
+    const sprites = this.spritesFor(s);
+    if (!sprites.length) return [];
+    const { W, H } = this;
+    const v = this.speed;
+    const n = Math.min(18, Math.max(sprites.length * 3, Math.round(6 + 10 * (s.particle_density || 0.5))));
+    const cx = box.x + box.w / 2;
+    const neckY = box.y + box.h * 0.08;
+    const seed = (s.index || 1) * 7 + (s.seed || 0);
+    const out = [];
+    const at = (i, t) => {
+      const h1 = hash(i, seed), h2 = hash(i, seed + 1), h3 = hash(i, seed + 2);
+      if (mode === "vortice") {
+        // saem do gargalo e sobem girando em redemoinho
+        const delay = i * 0.16 + h1 * 0.2;
+        const u = clamp((t - delay) / (2.2 + h2));
+        if (u <= 0) return null;
+        const ang = h3 * 6.28 + (t - delay) * (1.9 + h2) * v;
+        const rad = lerp(W * 0.03, W * (0.28 + 0.14 * h1), easeOut(u));
+        return { x: cx + Math.cos(ang) * rad, y: neckY - easeOut(u) * H * (0.42 + 0.18 * h2) + Math.sin(t * 2 + i) * 6, z: Math.sin(ang) * rad, s: lerp(0.25, 1, easeOut(clamp(u * 1.8))), rot: ang * 0.6 + h1 * 6 };
+      }
+      if (mode === "orbita") {
+        const ang = h3 * 6.28 + t * (0.55 + 0.25 * h1) * v;
+        const rad = W * (0.3 + 0.12 * h2);
+        const y = box.y + box.h * (0.05 + 0.9 * h1) + Math.sin(t * 0.8 + i) * 18;
+        return { x: cx + Math.cos(ang) * rad, y, z: Math.sin(ang) * rad, s: 1, rot: t * (0.3 + h2) + h3 * 6 };
+      }
+      // close: poucos ingredientes grandes flutuando, outros desfocados ao fundo e à frente
+      const big = i < Math.min(2, sprites.length);
+      if (big) {
+        const side = sprites.length === 1 ? 0 : i === 0 ? -1 : 1;
+        return { x: W / 2 + side * W * 0.2 + Math.sin(t * 0.5 + i) * W * 0.02, y: H * (0.44 + i * 0.08) + Math.cos(t * 0.6 + i) * H * 0.012, z: -W * 0.05, s: 2.3 - i * 0.4, rot: Math.sin(t * 0.4 + i) * 0.35 };
+      }
+      const far = h1 > 0.35;
+      return { x: W * h2, y: H * ((h3 + t * 0.03 * v) % 1.1) - H * 0.05, z: far ? W * (0.6 + h1) : -W * (0.6 + h3 * 0.4), s: far ? 0.9 : 1.6, rot: t * 0.5 + i };
+    };
+    for (let i = 0; i < n; i++) {
+      const p = at(i, lt);
+      if (!p) continue;
+      const prev = at(i, lt - 0.04) || p;
+      out.push({ ...p, prev, sprite: sprites[i % sprites.length] });
+    }
+    return out;
+  }
+
+  drawItems(items) {
+    const { ctx, W } = this;
+    const base = W * 0.17;
+    for (const it of items) {
+      const persp = 1 / (1 + it.z / (W * 1.6));
+      const size = base * it.s * persp;
+      if (size < 4) continue;
+      const dz = Math.abs(it.z);
+      const lvl = dz > W * 0.5 ? 2 : dz > W * 0.22 ? 1 : 0;
+      const img = it.sprite.levels[lvl];
+      const w = size * (img.width / Math.max(img.width, img.height)), h = size * (img.height / Math.max(img.width, img.height));
+      const speed = Math.hypot(it.x - it.prev.x, it.y - it.prev.y);
+      ctx.save();
+      // rastro de movimento: cópias translúcidas na direção do movimento
+      if (speed > 6 * this.k) {
+        for (const f of [0.66, 0.33]) {
+          ctx.globalAlpha = 0.18 * f;
+          ctx.save();
+          ctx.translate(lerp(it.x, it.prev.x, f * 2), lerp(it.y, it.prev.y, f * 2));
+          ctx.rotate(it.rot);
+          ctx.drawImage(img, -w / 2, -h / 2, w, h);
+          ctx.restore();
+        }
+      }
+      ctx.globalAlpha = it.z > W * 0.9 ? 0.75 : 1;
+      ctx.translate(it.x, it.y);
+      ctx.rotate(it.rot);
+      ctx.drawImage(img, -w / 2, -h / 2, w, h);
+      ctx.restore();
+    }
+  }
+
+  // fitas douradas em espiral ao redor do frasco (metade de trás antes do frasco, metade da frente depois)
+  ribbons(box, lt, dur, front) {
+    const { ctx, W, k } = this;
+    const cx = box.x + box.w / 2;
+    const grow = easeInOut(ramp(lt, 0.2, dur * 0.7));
+    if (grow <= 0) return;
+    ctx.save();
+    ctx.lineCap = "round";
+    for (let r = 0; r < 2; r++) {
+      const R = box.w * (0.95 + 0.25 * r);
+      const steps = 90;
+      let prev = null;
+      for (let i = 0; i <= steps * grow; i++) {
+        const s = i / steps;
+        const ang = s * Math.PI * 4 + lt * 1.3 * this.speed + r * Math.PI;
+        const x = cx + Math.cos(ang) * R;
+        const y = box.y + box.h * 1.05 - s * box.h * 1.5;
+        const z = Math.sin(ang);
+        if (prev && (z >= 0) === !front) {
+          const persp = 1 / (1 + (z * R) / (W * 1.6));
+          const light = Math.max(0, Math.cos(ang - 0.6));
+          const [a1, a2, a3] = rgb(this.c.line), [b1, b2, b3] = rgb(this.c.soft);
+          const dim = z > 0 ? 0.55 : 1; // metade de trás mais escura (profundidade)
+          ctx.strokeStyle = `rgb(${Math.round(lerp(a1, b1, light) * dim)},${Math.round(lerp(a2, b2, light) * dim)},${Math.round(lerp(a3, b3, light) * dim)})`;
+          ctx.lineWidth = (11 + 7 * (1 - z)) * k * persp;
+          ctx.beginPath(); ctx.moveTo(prev.x, prev.y); ctx.lineTo(x, y); ctx.stroke();
+        }
+        prev = { x, y };
+      }
+    }
+    ctx.restore();
+  }
+
+  photoScene(s, lt, dur, mode) {
+    const box = this.heroBox();
+    const items = this.items3D(s, lt, mode, box).sort((a, b) => b.z - a.z);
+    if (!items.length && !this.bottle) return this.scene_ingrediente(s, lt, dur);
+    this.drawItems(items.filter((i) => i.z > 0));
+    if (mode !== "close") this.ribbons(box, lt, dur, false);
+    if (mode !== "close") this.drawHero(box, lt, dur);
+    if (mode !== "close") this.ribbons(box, lt, dur, true);
+    this.drawItems(items.filter((i) => i.z <= 0));
+    if (!items.length && mode === "close") this.scene_ingrediente(s, lt, dur);
+  }
+
+  scene_vortice(s, lt, dur) { this.photoScene(s, lt, dur, "vortice"); }
+  scene_orbita_ingredientes(s, lt, dur) { this.photoScene(s, lt, dur, "orbita"); }
+  scene_close_ingrediente(s, lt, dur) { this.photoScene(s, lt, dur, "close"); }
+}
+
+// três níveis de nitidez de cada ingrediente (profundidade de campo), via redução e ampliação
+function blurLevels(img) {
+  const max = 900;
+  const sc = Math.min(1, max / Math.max(img.width, img.height));
+  const w = Math.max(2, Math.round(img.width * sc)), h = Math.max(2, Math.round(img.height * sc));
+  const probe = canvas(2, 2).getContext("2d");
+  probe.filter = "blur(2px)";
+  const hasFilter = probe.filter === "blur(2px)";
+  const level = (radius) => {
+    const pad = Math.ceil(radius * 2.5);
+    const c = canvas(w + pad * 2, h + pad * 2);
+    const g = c.getContext("2d");
+    g.imageSmoothingQuality = "high";
+    if (!radius) { g.drawImage(img, pad, pad, w, h); return c; }
+    if (hasFilter) { g.filter = `blur(${radius}px)`; g.drawImage(img, pad, pad, w, h); return c; }
+    // reserva: reduz em duas etapas e amplia suavizando
+    const div = Math.max(2, radius / 2);
+    const t1 = canvas(Math.max(2, Math.round(w / Math.sqrt(div))), Math.max(2, Math.round(h / Math.sqrt(div))));
+    t1.getContext("2d").drawImage(img, 0, 0, t1.width, t1.height);
+    const t2 = canvas(Math.max(2, Math.round(w / div)), Math.max(2, Math.round(h / div)));
+    t2.getContext("2d").drawImage(t1, 0, 0, t2.width, t2.height);
+    g.drawImage(t2, pad, pad, w, h);
+    return c;
+  };
+  const r = Math.max(w, h) / 900;
+  return [level(0), level(Math.round(10 * r) || 3), level(Math.round(26 * r) || 7)];
 }
