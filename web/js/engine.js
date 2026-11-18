@@ -80,7 +80,15 @@ export class Engine {
     this.d = d;
     this.speed = { muito_lenta: 0.6, lenta: 0.85, moderada: 1.1 }[d.motion_speed] || 0.85;
     let t = 0;
-    this.timeline = d.scenes.map((s) => { const e = { scene: s, start: t, dur: s.duration_s }; t += s.duration_s; return e; });
+    let open = false;
+    this.timeline = d.scenes.map((s) => {
+      const state = s.type === "abre_frasco" ? "opening" : s.type === "fecha_frasco" ? "closing" : open ? "open" : "closed";
+      if (s.type === "abre_frasco") open = true;
+      if (s.type === "fecha_frasco" || ["packshot", "notas", "abertura"].includes(s.type)) open = false;
+      const e = { scene: s, start: t, dur: s.duration_s, state: ["packshot", "notas", "abertura"].includes(s.type) ? "closed" : state };
+      t += s.duration_s;
+      return e;
+    });
     this.duration = t;
     this.accents = [this.c.accent, this.c.soft, ...d.accent_colors.map((a) => a.hex)];
   }
@@ -142,7 +150,7 @@ export class Engine {
       const u = lt / TRANSITION;
       let kind = cur.scene.transition_in;
       // duas cenas com o frasco em primeiro plano: fusão mostraria dois frascos; usa corte seco com brilho
-      const HERO = ["frasco_revelacao", "frasco_luz", "vortice", "orbita_ingredientes"];
+      const HERO = ["frasco_revelacao", "frasco_luz", "vortice", "orbita_ingredientes", "abre_frasco", "fecha_frasco"];
       if (kind !== "fade_preto" && HERO.includes(prev.scene.type) && HERO.includes(cur.scene.type)) kind = "corte";
       if (kind === "corte") {
         this.drawScene(cur, lt);
@@ -245,6 +253,7 @@ export class Engine {
     this.depth(cam, 0.6);
     this.particles(s, lt, seed, "back");
     this.depth(cam, 1);
+    this.cur = entry;
     const fn = this["scene_" + s.type];
     if (fn) fn.call(this, s, lt, entry.dur);
     this.depth(cam, 1.4);
@@ -488,7 +497,7 @@ export class Engine {
     return { x: this.W / 2 - w / 2, y: floorY - h, w, h };
   }
 
-  drawBottle(box, { alpha = 1, glow = 1, sweep = -1, floor = 1 } = {}) {
+  drawBottle(box, { alpha = 1, glow = 1, sweep = -1, floor = 1, image = true } = {}) {
     const { ctx, k } = this;
     if (!this.bottle) return;
     const cx = box.x + box.w / 2, floorY = box.y + box.h;
@@ -513,6 +522,7 @@ export class Engine {
       ctx.drawImage(this.reflection, box.x, floorY + 2 * k, box.w, box.h);
       ctx.restore();
     }
+    if (!image) return;
     ctx.save();
     ctx.globalAlpha = alpha;
     if (sweep >= 0 && sweep <= 1) {
@@ -630,7 +640,7 @@ export class Engine {
   }
 
   scene_frasco_revelacao(s, lt, dur) {
-    if (this.photoBottle) { this.drawHero(this.heroBox(), lt, dur); return; } // a revelação vem da luz do cenário
+    if (this.photoBottle || (this.cur?.state || "closed") !== "closed") { this.drawHero(this.heroBox(), lt, dur); return; } // a revelação vem da luz do cenário
     const p = ramp(lt, 0, dur * 0.7);
     const box = this.heroBox();
     this.drawBottle(box, { alpha: easeInOut(p), glow: easeOut(ramp(lt, 0, dur * 0.5)), floor: easeOut(ramp(lt, dur * 0.3, dur * 0.8)) });
@@ -693,6 +703,155 @@ export class Engine {
     for (const it of a.ingredients || []) {
       this.ingredients.push({ note: it.note.toLowerCase().trim(), levels: blurLevels(it.image) });
     }
+    this.prepareCap();
+  }
+
+  // separa tampa e corpo do frasco real, e amostra a cor do líquido
+  prepareCap() {
+    const b = this.bottle;
+    if (!b) return;
+    const split = clamp(this.assets.capSplit ?? 0.25, 0.05, 0.6);
+    this.capSplit = split;
+    const cy = Math.round(b.height * split);
+    this.capImg = canvas(b.width, Math.max(1, cy));
+    this.capImg.getContext("2d").drawImage(b, 0, 0);
+    this.bodyImg = canvas(b.width, Math.max(1, b.height - cy));
+    this.bodyImg.getContext("2d").drawImage(b, 0, -cy);
+    // cor média do líquido (metade de baixo do corpo, pixels opacos)
+    const sm = canvas(24, 24), g = sm.getContext("2d", { willReadFrequently: true });
+    g.drawImage(this.bodyImg, 0, this.bodyImg.height * 0.35, this.bodyImg.width, this.bodyImg.height * 0.55, 0, 0, 24, 24);
+    const px = g.getImageData(0, 0, 24, 24).data;
+    let r = 0, gg = 0, bb = 0, n = 0;
+    for (let i = 0; i < px.length; i += 4) if (px[i + 3] > 200) { r += px[i]; gg += px[i + 1]; bb += px[i + 2]; n++; }
+    const base = n ? [r / n, gg / n, bb / n] : rgb(this.c.accent);
+    // garante um tom de líquido com corpo (nem preto, nem lavado)
+    const lum = (base[0] + base[1] + base[2]) / 3;
+    const k = lum < 60 ? 60 / Math.max(1, lum) : 1;
+    this.liq = base.map((v) => clamp(v * k, 0, 255));
+    // cenário com o lugar da tampa preenchido (para a tampa poder sair sem deixar cópia)
+    if (this.plate && this.assets.capRect) {
+      const pw = this.plate.width, ph = this.plate.height, cr = this.assets.capRect;
+      const clean = canvas(pw, ph), g2 = clean.getContext("2d");
+      g2.drawImage(this.plate, 0, 0);
+      const x = cr.x * pw, y = cr.y * ph, w = cr.w * pw, h = cr.h * ph, pad = w * 0.12;
+      const patch = canvas(Math.ceil(w + pad * 2), Math.ceil(h + pad * 2)), pg = patch.getContext("2d");
+      pg.drawImage(this.plate, x - pad, y - h - pad * 1.5, w + pad * 2, h + pad * 2, 0, 0, patch.width, patch.height);
+      pg.globalCompositeOperation = "destination-in";
+      const m = pg.createRadialGradient(patch.width / 2, patch.height / 2, Math.min(patch.width, patch.height) * 0.35, patch.width / 2, patch.height / 2, Math.max(patch.width, patch.height) * 0.62);
+      m.addColorStop(0, "rgba(0,0,0,1)"); m.addColorStop(1, "rgba(0,0,0,0)");
+      pg.fillStyle = m; pg.fillRect(0, 0, patch.width, patch.height);
+      g2.drawImage(patch, x - pad, y - pad);
+      g2.drawImage(patch, x - pad, y - pad); // duas passadas cobrem melhor o centro
+      this.plateClean = clean;
+    }
+  }
+
+  liqColor(light, dim = 1) {
+    const [r, g, b] = this.liq;
+    const mix = (v, to, t) => v + (to - v) * t;
+    const t = light;
+    const f = (v) => Math.round(clamp(mix(v * 0.45, Math.min(255, v * 1.35 + 40), t) * dim, 0, 255));
+    return `rgb(${f(r)},${f(g)},${f(b)})`;
+  }
+
+  // abertura da tampa (0 fechada .. 1 solta no ar) e altura do líquido (0..1) para a cena atual
+  openState(lt, dur) {
+    const st = this.cur?.state || "closed";
+    if (st === "opening") return { cap: easeInOut(ramp(lt, dur * 0.08, dur * 0.42)), liquid: easeOut(ramp(lt, dur * 0.3, dur * 0.85)), shake: lt < dur * 0.12 ? Math.sin(lt * 60) * (1 - lt / (dur * 0.12)) : 0 };
+    if (st === "open") return { cap: 1, liquid: 1, shake: 0 };
+    if (st === "closing") return { cap: 1 - easeInOut(ramp(lt, dur * 0.45, dur * 0.85)), liquid: 1 - easeInOut(ramp(lt, 0, dur * 0.55)), shake: 0 };
+    return { cap: 0, liquid: 0, shake: 0 };
+  }
+
+  // redemoinho de líquido saindo do gargalo (faixas com sombreamento cilíndrico, brilho e transparência)
+  liquid(box, lt, grow, front) {
+    if (grow <= 0.001 || !this.liq) return;
+    const { ctx, W, H } = this;
+    const cx = box.x + box.w / 2;
+    const neckY = box.y + box.h * this.capSplit;
+    const height = H * 0.6 * grow;
+    const v = this.speed;
+    if (!this.liqGlow) this.liqGlow = glowSprite("#" + this.liq.map((x) => Math.round(x).toString(16).padStart(2, "0")).join(""), 256, 1.2);
+    ctx.save();
+    if (!front) { // brilho translúcido atrás do redemoinho
+      ctx.globalCompositeOperation = "lighter";
+      ctx.globalAlpha = 0.35 * grow;
+      const gw = box.w * 2.2;
+      ctx.drawImage(this.liqGlow, cx - gw / 2, neckY - height * 0.75 - gw / 2, gw, gw * 1.4);
+      ctx.globalCompositeOperation = "source-over";
+      ctx.globalAlpha = 1;
+    }
+    for (let j = 0; j < 3; j++) {
+      const steps = 64;
+      const pts = [];
+      for (let i = 0; i <= steps; i++) {
+        const sN = i / steps;
+        const ang = sN * (5.5 + j) - lt * 3.2 * v + j * 2.1;
+        const R = box.w * (0.04 + sN * (0.38 + 0.12 * j)) * (0.6 + 0.4 * grow);
+        const taper = Math.min(1, (1 - sN) * 4) * Math.min(1, sN * 12 + 0.4);
+        pts.push({
+          x: cx + Math.cos(ang) * R,
+          y: neckY - sN * height + Math.sin(lt * 2 + sN * 5 + j) * 5 * this.k,
+          z: Math.sin(ang), ang, sN,
+          w: box.w * (0.22 - 0.12 * sN) * (1 - 0.22 * j) * taper,
+        });
+      }
+      for (let i = 1; i < pts.length; i++) {
+        const a = pts[i - 1], b = pts[i];
+        if ((b.z >= 0) === front) continue;
+        const dx = b.x - a.x, dy = b.y - a.y, len = Math.hypot(dx, dy) || 1;
+        const nx = -dy / len, ny = dx / len;
+        const ex = (dx / len) * 1.2, ey = (dy / len) * 1.2; // leve sobreposição evita frestas
+        const wa = Math.max(1, a.w * (0.8 + 0.2 * (1 - a.z))) / 2, wb = Math.max(1, b.w * (0.8 + 0.2 * (1 - b.z))) / 2;
+        const g = ctx.createLinearGradient(a.x - nx * wa, a.y - ny * wa, a.x + nx * wa, a.y + ny * wa);
+        const facing = Math.max(0, Math.cos(a.ang - 0.7));
+        const dim = b.z > 0 ? 0.55 : 1;
+        g.addColorStop(0, this.liqColor(0.02, dim));
+        g.addColorStop(0.3, this.liqColor(0.35 + 0.3 * facing, dim));
+        g.addColorStop(0.55, this.liqColor(0.6 + 0.35 * facing, dim));
+        g.addColorStop(0.68, front && facing > 0.3 ? `rgba(255,250,236,${0.5 + 0.45 * facing})` : this.liqColor(0.7, dim));
+        g.addColorStop(0.8, this.liqColor(0.4, dim));
+        g.addColorStop(1, this.liqColor(0.05, dim));
+        ctx.globalAlpha = 0.93 * Math.min(1, (1 - b.sN) * 3);
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.moveTo(a.x - nx * wa - ex, a.y - ny * wa - ey);
+        ctx.lineTo(b.x - nx * wb + ex, b.y - ny * wb + ey);
+        ctx.lineTo(b.x + nx * wb + ex, b.y + ny * wb + ey);
+        ctx.lineTo(a.x + nx * wa - ex, a.y + ny * wa - ey);
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
+    ctx.globalAlpha = 1;
+    if (front) {
+      // gotas lançadas para fora do redemoinho
+      for (let i = 0; i < 26; i++) {
+        const h1 = hash(i, 91), h2 = hash(i, 92), h3 = hash(i, 93);
+        const age = (lt * (0.35 + 0.3 * h1) * v + h2) % 1;
+        const ang = h3 * 6.28 + age * 2;
+        const r0 = box.w * (0.1 + 0.6 * h1) * grow + age * W * 0.25;
+        const x = cx + Math.cos(ang) * r0;
+        const y = neckY - height * (0.15 + 0.7 * h2) - age * H * 0.12 + age * age * H * 0.25;
+        const rad = (3 + 9 * h3) * this.k * (1 - age * 0.5) * grow;
+        if (rad < 1) continue;
+        const g = ctx.createRadialGradient(x - rad * 0.35, y - rad * 0.35, rad * 0.1, x, y, rad);
+        g.addColorStop(0, "rgba(255,250,235,0.95)");
+        g.addColorStop(0.35, this.liqColor(0.7));
+        g.addColorStop(1, this.liqColor(0.1));
+        ctx.globalAlpha = Math.sin(age * Math.PI);
+        ctx.fillStyle = g;
+        ctx.beginPath(); ctx.arc(x, y, rad, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+      // coroa de líquido no gargalo
+      const cw = box.w * 0.34 * grow;
+      const g = ctx.createRadialGradient(cx, neckY, 0, cx, neckY, cw);
+      g.addColorStop(0, this.liqColor(0.9)); g.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.ellipse(cx, neckY, cw, cw * 0.32, 0, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.restore();
   }
 
   drawPlate(type, lt, dur) {
@@ -706,7 +865,7 @@ export class Engine {
     }[type] || { dark: 0.2 };
     ctx.save();
     ctx.imageSmoothingQuality = "high";
-    ctx.drawImage(look.blur ? this.plateBlur : this.plate, r.x, r.y, r.w, r.h);
+    ctx.drawImage(look.blur ? this.plateBlur : this.plateClean || this.plate, r.x, r.y, r.w, r.h);
     // tratamento de cor da marca: sombras quentes, perto do preto oficial
     ctx.globalCompositeOperation = "multiply";
     ctx.fillStyle = rgba(this.c.soft, 0.18);
@@ -726,6 +885,28 @@ export class Engine {
 
   drawHero(box, lt, dur, { sweep = -1 } = {}) {
     if (!this.bottle) return;
+    const os = this.openState(lt, dur);
+    if (os.cap > 0 || os.liquid > 0 || os.shake || this.plateClean) {
+      const { ctx } = this;
+      const capH = box.h * this.capSplit;
+      if (!box.inPlate) this.drawBottle(box, { image: false }); // só luz, piso e reflexo
+      this.liquid(box, lt, os.liquid, false);
+      ctx.save();
+      ctx.translate(os.shake * 2 * this.k, 0);
+      ctx.drawImage(this.bodyImg, box.x, box.y + capH, box.w, box.h - capH);
+      ctx.restore();
+      // tampa: sobe girando e flutua
+      const c = os.cap;
+      const cx = box.x + box.w / 2, cyc = box.y + capH / 2;
+      const bob = c >= 1 ? Math.sin(lt * 1.6) * 8 * this.k : 0;
+      ctx.save();
+      ctx.translate(cx + c * box.w * 0.55 + os.shake * 2 * this.k, cyc - c * this.H * 0.3 + bob);
+      ctx.rotate(c * 0.55);
+      ctx.drawImage(this.capImg, -box.w / 2, -capH / 2, box.w, capH);
+      ctx.restore();
+      this.liquid(box, lt, os.liquid, true);
+      return;
+    }
     if (box.inPlate) {
       // o frasco já está na foto: redesenha o recorte exatamente por cima (para os ingredientes passarem atrás)
       const { ctx } = this;
@@ -751,14 +932,16 @@ export class Engine {
     const v = this.speed;
     const n = Math.min(18, Math.max(sprites.length * 3, Math.round(6 + 10 * (s.particle_density || 0.5))));
     const cx = box.x + box.w / 2;
-    const neckY = box.y + box.h * 0.08;
+    const neckY = box.y + box.h * (this.capSplit ?? 0.08);
+    const st = this.cur?.state;
+    const startAt = st === "opening" ? (this.cur.dur * 0.45) : 0;
     const seed = (s.index || 1) * 7 + (s.seed || 0);
     const out = [];
     const at = (i, t) => {
       const h1 = hash(i, seed), h2 = hash(i, seed + 1), h3 = hash(i, seed + 2);
       if (mode === "vortice") {
         // saem do gargalo e sobem girando em redemoinho
-        const delay = i * 0.16 + h1 * 0.2;
+        const delay = startAt + i * 0.16 + h1 * 0.2;
         const u = clamp((t - delay) / (2.2 + h2));
         if (u <= 0) return null;
         const ang = h3 * 6.28 + (t - delay) * (1.9 + h2) * v;
@@ -859,14 +1042,17 @@ export class Engine {
     const items = this.items3D(s, lt, mode, box).sort((a, b) => b.z - a.z);
     if (!items.length && !this.bottle) return this.scene_ingrediente(s, lt, dur);
     this.drawItems(items.filter((i) => i.z > 0));
-    if (mode !== "close") this.ribbons(box, lt, dur, false);
+    const closed = (this.cur?.state || "closed") === "closed";
+    if (mode !== "close" && closed) this.ribbons(box, lt, dur, false);
     if (mode !== "close") this.drawHero(box, lt, dur);
-    if (mode !== "close") this.ribbons(box, lt, dur, true);
+    if (mode !== "close" && closed) this.ribbons(box, lt, dur, true);
     this.drawItems(items.filter((i) => i.z <= 0));
     if (!items.length && mode === "close") this.scene_ingrediente(s, lt, dur);
   }
 
   scene_vortice(s, lt, dur) { this.photoScene(s, lt, dur, "vortice"); }
+  scene_abre_frasco(s, lt, dur) { this.photoScene(s, lt, dur, "vortice"); }
+  scene_fecha_frasco(s, lt, dur) { this.drawHero(this.heroBox(), lt, dur); }
   scene_orbita_ingredientes(s, lt, dur) { this.photoScene(s, lt, dur, "orbita"); }
   scene_close_ingrediente(s, lt, dur) { this.photoScene(s, lt, dur, "close"); }
 }
